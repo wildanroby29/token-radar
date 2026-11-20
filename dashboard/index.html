@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Token Radar: pre-token protocols ranked by fitted implied value</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<a class="skip" href="#board">Skip to the board</a>
+<main id="board" tabindex="-1" aria-busy="true">
+  <header class="topbar">
+    <span class="brand"><span class="dot" aria-hidden="true"></span> Token Radar</span>
+    <span class="meta" id="meta"></span>
+  </header>
+
+  <section class="hero">
+    <h1 id="headline"></h1>
+    <p class="lede" id="lede"></p>
+    <div class="kpis" id="kpis"></div>
+  </section>
+
+  <section class="ledger" id="ledger" aria-label="Ledger"></section>
+
+  <section class="evidence" aria-label="Evidence">
+    <h2>Why this ranking can be trusted — and where it can be wrong</h2>
+    <div class="evidence-grid">
+      <div>
+        <h3>The fitted curve, tested held-out</h3>
+        <table class="plain" id="evidence-table"></table>
+        <p class="note" id="evidence-note"></p>
+      </div>
+      <div>
+        <h3>Launch odds by age</h3>
+        <table class="plain" id="odds-table"></table>
+        <p class="note">Odds are the share of protocols in each age bucket that record a token
+        (market cap, CoinGecko id or symbol set). Brier score <span id="brier"></span>.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="spotlight" aria-label="Top 5">
+    <h2>Top 5 by implied value</h2>
+    <div class="cards" id="top5"></div>
+  </section>
+
+  <section class="sandbox" aria-label="Model sandbox">
+    <h2>Model sandbox — what if the curve were different?</h2>
+    <p class="note">Move the sliders to see how the Top 5 implied values change. This is a
+    what-if view only; board.json is fixed by the fitted curve.</p>
+    <label>Size exponent <output id="exp-out"></output>
+      <input type="range" id="exp-slider" min="0.40" max="0.65" step="0.005" value="0.522">
+    </label>
+    <label>Curve scale (intercept shift) <output id="scale-out"></output>
+      <input type="range" id="scale-slider" min="-0.5" max="0.5" step="0.01" value="0">
+    </label>
+    <div class="sandbox-result" id="sandbox-result"></div>
+  </section>
+
+  <section class="controls" aria-label="Filters">
+    <label>Search
+      <input type="search" id="search" placeholder="Search name, category or chain" autocomplete="off">
+    </label>
+    <label>Category
+      <select id="category"><option value="">All categories</option></select>
+    </label>
+    <label>Chain
+      <select id="chain"><option value="">All chains</option></select>
+    </label>
+    <label>Sort by
+      <select id="sort">
+        <option value="rank">Rank</option>
+        <option value="implied">Implied value</option>
+        <option value="tvl">TVL</option>
+        <option value="growth">7-day change</option>
+        <option value="age">Age</option>
+      </select>
+    </label>
+    <div class="toggle" role="group" aria-label="Token status">
+      <button type="button" id="show-pre" class="active">Pre-token</button>
+      <button type="button" id="show-live">Live token</button>
+    </div>
+    <span class="count" id="count"></span>
+  </section>
+
+  <section class="tablewrap">
+    <table class="board" id="board-table">
+      <thead><tr>
+        <th>Rank</th><th>Protocol</th><th>Category</th><th>Chains</th>
+        <th>TVL</th><th>7d</th><th>Implied value</th><th>P25–P75 range</th>
+        <th>Launch odds</th><th>Verdict ($1k)</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <table class="board" id="live-table" hidden>
+      <thead><tr>
+        <th>#</th><th>Protocol</th><th>Category</th><th>Chains</th>
+        <th>TVL</th><th>7d</th><th>Market cap</th>
+      </tr></thead>
+      <tbody id="live-rows"></tbody>
+    </table>
+    <p class="note">Click any row for its detail view and farm plan.</p>
+  </section>
+
+  <footer class="method" id="method"></footer>
+</main>
+
+<aside class="drawer" id="drawer" hidden aria-label="Protocol detail">
+  <button type="button" class="close" id="drawer-close">Close ✕</button>
+  <div id="drawer-body"></div>
+</aside>
+
+<script src="../data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
