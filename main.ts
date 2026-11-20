@@ -1,5 +1,10 @@
 // A working token-radar-01 entry (Node 22, standard library only).
 //
+// token-radar-01 entrypoint. It reads the sealed DefiLlama snapshot, scores every
+// pre-token protocol with the fitted-comps model in lib/model.ts, and writes out
+// board.json, the dashboard data, and dossier.json. The model is fitted from the
+// snapshot's own traded tokens at run time; nothing here hardcodes a protocol name.
+//
 // The program reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), scores every
 // pre-token protocol with the model in lib/model.ts, writes the ranked board to /output/board.json, and
 // copies this repository's dashboard/ and screenshots/ to /output. Last, it writes /output/dossier.json,
