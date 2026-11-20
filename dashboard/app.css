@@ -33,6 +33,15 @@ table.plain { border-collapse: collapse; width: 100%; font-size: 15px; }
 table.plain th, table.plain td { text-align: left; padding: 7px 10px 7px 0;
   border-bottom: 1px solid #22385c; }
 table.plain th { color: #9db4d8; font-weight: 600; }
+.scatter { margin: 28px 0 0; }
+.scatter h3 { margin-bottom: 8px; }
+.scatter svg { width: 100%; max-width: 760px; height: auto; display: block;
+  background: #0e2242; border: 1px solid #22385c; border-radius: 10px; }
+.scatter .grid { stroke: #22385c; stroke-width: 1; }
+.scatter .axis { fill: #9db4d8; font-size: 11px; }
+.scatter .axis-title { fill: #c4d3ea; font-size: 12px; }
+.scatter .curve { stroke: #b8f135; stroke-width: 2.5; }
+.scatter .dot-pt { fill: #7fb8e8; }
 .note { color: #9db4d8; font-size: 14px; }
 .cards { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
 .card { background: #0e2242; border: 1px solid #22385c; border-radius: 10px; padding: 16px; }

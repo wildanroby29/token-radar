@@ -32,6 +32,47 @@ Growth and age are shown per row as context only; they do not move the number.
 Adding 7-day growth, age, or chain count each made both held-out tests worse in
 the earlier analysis, so the curve is size alone.
 
+### Term tests, 2026-11-20 (maximization round — no term survived)
+
+Candidates were tested with the same discipline: a term is kept only if it lowers
+**both** the leave-one-out miss and the walk-forward miss (fit before 2024-12-19,
+test after; 63 train / 32 test). All terms use the snapshot's own fields only.
+
+| Term | Leave-one-out | Walk-forward | Verdict |
+|---|---|---|---|
+| **Size only (kept)** | **×3.40** | **×2.88** | **kept** |
+| + per-category intercepts (Dexs 11, Lending 15 traded; smaller categories fall back to the global intercept) | ×3.68 | ×2.75 | rejected — LOO worse |
+| + sibling indicator (shares a first-word name stem with another protocol that records a token; 8 of 128 traded, 19 of 342 pre-token) | ×3.30 | ×3.16 | rejected — WF worse |
+| + log age (log10 days since listed_at; missing listed_at imputed with the training median; 33 of 128 traded have no listed_at) | ×3.42 | ×9.15 | rejected — WF collapses |
+| + category + sibling | ×3.57 | ×2.72 | rejected — LOO worse |
+| + category + log age | ×3.63 | ×10.70 | rejected |
+| + sibling + log age | ×3.29 | ×9.96 | rejected |
+| + all three | ×3.53 | ×9.91 | rejected |
+
+Why log age breaks walk-forward: its slope fit on the pre-cutoff tokens is +1.53
+(vs −0.15 on the full set), and the post-cutoff test tokens' log-age range
+(1.90–2.84) lies entirely below the training range (2.87–3.27), so the term
+extrapolates catastrophically. The sibling indicator is too sparse to estimate
+(2 positives in walk-forward train, 1 in test). The model stays the size-only
+curve; the board, top 5 and total implied value are unchanged.
+
+### Dashboard additions, 2026-11-20
+
+- **Fit scatter** (evidence section): a static SVG of the 128 traded tokens,
+  log10 TVL vs log10 market cap, with the fitted curve line and the equation in
+  the caption. No network, no library. The 128 points ride in `data.js`
+  (`fit_points`, added to `RadarData` in `lib/model.ts`); `main.ts` itself is
+  untouched. One fix during visual checking: the last x-axis tick label was
+  clipped at the SVG edge, so end ticks are now end-anchored.
+- **Verdict toggle** (above the board table): $1,000 / $10,000 buttons that
+  switch the Verdict column and its header label between the per-row
+  `verdict_1k` and `verdict_10k` already computed. Default stays $1,000.
+  Verified live: Polymarket International flips SKIP → MARGINAL, header becomes
+  "Verdict ($10,000)", 190 rows still shown. The detail drawer keeps its own
+  $1k/$10k toggle, unchanged.
+- Evidence note and methodology footer now name the new term tests and their
+  numbers. Base type and layout unchanged; nothing was densified.
+
 ### Held-out evidence (128 traded tokens, recomputed in the model)
 
 | Model | Leave-one-out miss | Walk-forward miss | P25–P75 holds | P10–P90 holds |
@@ -107,18 +148,28 @@ exit 0
 
 - `board.json`: 190 rows, ranks 1..190, sorted by implied value descending, 40/40
   watchlist, 6 farm steps per row, every step 20–600 chars. `boardIssue` returns null (exit 0).
-- Screenshots (rendered from the actual `out/dashboard` with Playwright headless Chromium,
-  stock Chromium from the Playwright cache — the VM's bundled Chromium refuses to start
-  without a Hatch WebGL domain-policy file; the dashboard itself uses no WebGL):
-  `1-board.png` 1440×900, 160 KiB; `2-detail.png` 1440×900, 245 KiB (Sentora Curator
-  drawer, SKIP at $1k, break-even $23,981); `3-filtered.png` 1440×900, 188 KiB
+  Total implied value **$2,243,851,082** (unchanged — the model did not change).
+  Verdicts at $1,000: 180 SKIP / 10 THIN / 0 MARGINAL / 0 FARM; at $10,000:
+  8 SKIP / 29 THIN / 51 MARGINAL / 102 FARM.
+- Screenshots (re-rendered 2026-11-20 from the actual `out/dashboard` with Playwright
+  headless Chromium, stock Chromium from the Playwright cache — the VM's bundled
+  Chromium refuses to start without a Hatch WebGL domain-policy file; the dashboard
+  itself uses no WebGL):
+  `1-board.png` 1440×900, 146 KiB (Top 5 spotlight, sandbox, filters, the new
+  $1,000/$10,000 toggle, table head); `2-detail.png` 1440×900, 245 KiB (Sentora
+  Curator drawer, SKIP at $1k, break-even $23,981); `3-filtered.png` 1440×900, 188 KiB
   (Dexs filter, 20 rows shown) — all PNG, all under the 512 KiB cap, long side 1440,
   short side 900. Visually checked: all three readable, Top 5 visible, drawer and
-  filter working.
-- `dossier.json`: schema `makefun/dossier/v1`, 3 images, 27,451 bytes of text
-  (cap 65,536). Dashboard: 3 files, 27,185 bytes total (cap 400 files / 4 MiB).
-- `data.js` carries the full evidence, odds table, ledger, verdict counts and the
-  6-step farm plan per row, so the dashboard and board.json agree.
+  filter working, toggle visible. The scatter was checked in a separate render:
+  128 dots, fitted curve line, axes labelled $1M–$100B (TVL) and $10K–$10B
+  (market cap), equation in the caption. Toggle interaction verified live in the
+  browser (SKIP → MARGINAL on Polymarket International).
+- `dossier.json`: schema `makefun/dossier/v1`, 3 images, 32,673 bytes of text
+  (cap 65,536). Dashboard: 3 files, 32,306 bytes total (cap 400 files / 4 MiB).
+  `data.js` 271,528 bytes (now carries the 128 fit points).
+- `vendor/makefun-board.ts` sha256 still
+  `9ca51b6e5cd84fe46cb0efa61e2ea99365a1fb0e21f2b75e6007f977f0dc326e` (unchanged).
+- `main.ts` untouched (authored header comment intact).
 
 ## What remains before a real submit (NOT done)
 

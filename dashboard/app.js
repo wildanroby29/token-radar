@@ -103,8 +103,10 @@
   document.getElementById('evidence-note').textContent =
     'Miss is the median factor between predicted and true market cap. Leave-one-out refits the curve ' +
     'without each token and predicts it; walk-forward fits on tokens listed before 2024-12-19 and tests ' +
-    'on the 32 listed after. Adding growth, age or chain count made both held-out tests worse, so the ' +
-    'curve is size alone.';
+    'on the 32 listed after. More terms were tried and none survived both tests: per-category intercepts ' +
+    '(Dexs, Lending) lowered walk-forward to ×2.75 but raised leave-one-out to ×3.68; a sibling indicator ' +
+    'lowered leave-one-out to ×3.30 but raised walk-forward to ×3.16; log age broke walk-forward outright ' +
+    '(×9.15) by extrapolating past its training range. So the curve stays size alone.';
   document.getElementById('odds-table').innerHTML =
     '<tr><th>Age</th><th>Protocols</th><th>Share with a token</th></tr>' +
     ev.odds.map(function (o) {
@@ -114,6 +116,60 @@
   document.getElementById('brier').textContent =
     ev.brier_odds.toFixed(2) + ' vs ' + ev.brier_overall.toFixed(2) + ' for the overall rate alone (' +
     Math.round(ev.overall_token_share * 100) + '% of protocols record a token)';
+
+  // Fit scatter: log10 TVL against log10 market cap for the traded tokens,
+  // with the fitted curve. Static SVG, no network, no library.
+  (function renderScatter() {
+    var pts = (R.fit_points || []).map(function (p) {
+      return { x: Math.log10(p.tvl_usd), y: Math.log10(p.mcap_usd), name: p.name, tvl: p.tvl_usd, mcap: p.mcap_usd };
+    });
+    if (pts.length === 0) return;
+    var W = 640, H = 400, L = 64, Rr = 16, T = 16, B = 52;
+    var xs = pts.map(function (p) { return p.x; });
+    var ys = pts.map(function (p) { return p.y; });
+    var x0 = Math.floor(Math.min.apply(null, xs) - 0.2);
+    var x1 = Math.ceil(Math.max.apply(null, xs) + 0.2);
+    var y0 = Math.floor(Math.min.apply(null, ys) - 0.2);
+    var y1 = Math.ceil(Math.max.apply(null, ys) + 0.2);
+    function X(v) { return L + ((v - x0) / (x1 - x0)) * (W - L - Rr); }
+    function Y(v) { return T + (1 - (v - y0) / (y1 - y0)) * (H - T - B); }
+    function tickLabel(v) {
+      var n = Math.pow(10, v);
+      if (n >= 1e9) return '$' + (n / 1e9) + 'B';
+      if (n >= 1e6) return '$' + (n / 1e6) + 'M';
+      return '$' + (n / 1e3) + 'K';
+    }
+    var s = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Scatter of traded tokens: log TVL against log market cap, with the fitted curve">';
+    var t;
+    for (t = x0; t <= x1; t++) {
+      var anchor = t === x1 ? 'end' : (t === x0 ? 'start' : 'middle');
+      s += '<line x1="' + X(t) + '" y1="' + Y(y0) + '" x2="' + X(t) + '" y2="' + Y(y1) + '" class="grid"/>' +
+        '<text x="' + X(t) + '" y="' + (H - B + 20) + '" class="axis" text-anchor="' + anchor + '">' + tickLabel(t) + '</text>';
+    }
+    for (t = y0; t <= y1; t++) {
+      s += '<line x1="' + X(x0) + '" y1="' + Y(t) + '" x2="' + X(x1) + '" y2="' + Y(t) + '" class="grid"/>' +
+        '<text x="' + (L - 8) + '" y="' + (Y(t) + 4) + '" class="axis" text-anchor="end">' + tickLabel(t) + '</text>';
+    }
+    var curve = '';
+    for (var i = 0; i <= 40; i++) {
+      var xv = x0 + ((x1 - x0) * i) / 40;
+      var yv = ev.intercept + ev.exponent * xv;
+      curve += (i === 0 ? 'M' : 'L') + X(xv).toFixed(1) + ' ' + Y(yv).toFixed(1);
+    }
+    s += '<path d="' + curve + '" class="curve" fill="none"/>';
+    s += pts.map(function (p) {
+      return '<circle cx="' + X(p.x).toFixed(1) + '" cy="' + Y(p.y).toFixed(1) + '" r="3.5" class="dot-pt"><title>' +
+        esc(p.name) + ': TVL ' + money(p.tvl) + ', market cap ' + money(p.mcap) + '</title></circle>';
+    }).join('');
+    s += '<text x="' + ((W + L) / 2) + '" y="' + (H - 8) + '" class="axis-title" text-anchor="middle">TVL (log scale)</text>';
+    s += '<text x="16" y="' + ((H + T - B) / 2) + '" class="axis-title" text-anchor="middle" transform="rotate(-90 16 ' + ((H + T - B) / 2) + ')">Market cap (log scale)</text>';
+    s += '</svg>';
+    document.getElementById('scatter').innerHTML = s;
+    document.getElementById('scatter-note').textContent =
+      'Each dot is one of the ' + pts.length + ' traded tokens in this snapshot. The line is the fitted curve: ' +
+      'log10(market cap) = ' + ev.intercept.toFixed(4) + ' + ' + ev.exponent.toFixed(4) + ' × log10(TVL). ' +
+      'Dots above the line trade richer than their size alone predicts; dots below it trade cheaper.';
+  })();
 
   // Top 5 spotlight
   document.getElementById('top5').innerHTML = rows.slice(0, 5).map(function (r) {
@@ -151,6 +207,16 @@
   chains.forEach(function (c) { chainSel.insertAdjacentHTML('beforeend', '<option>' + esc(c) + '</option>'); });
 
   var mode = 'pre';
+  var depTable = 1000;
+  function setDepTable(dep) {
+    depTable = dep;
+    document.getElementById('dep-1k').classList.toggle('active', dep === 1000);
+    document.getElementById('dep-10k').classList.toggle('active', dep === 10000);
+    document.getElementById('verdict-th').textContent = 'Verdict ($' + dep.toLocaleString('en-US') + ')';
+    if (mode === 'pre') renderRows();
+  }
+  document.getElementById('dep-1k').addEventListener('click', function () { setDepTable(1000); });
+  document.getElementById('dep-10k').addEventListener('click', function () { setDepTable(10000); });
   var tbody = document.getElementById('rows');
   var liveTbody = document.getElementById('live-rows');
   function filtered() {
@@ -186,7 +252,7 @@
         '<td class="num"><b>' + money(r.implied_value_usd) + '</b></td>' +
         '<td class="num">' + money(r.implied_p25_usd) + ' – ' + money(r.implied_p75_usd) + '</td>' +
         '<td class="num">' + Math.round(r.launch_odds * 100) + '%</td>' +
-        '<td>' + badge(r.verdict_1k) + '</td></tr>';
+        '<td>' + badge(depTable === 1000 ? r.verdict_1k : r.verdict_10k) + '</td></tr>';
     }).join('');
     document.getElementById('count').textContent = list.length + ' rows shown';
   }
@@ -287,7 +353,9 @@
     ' × log10(TVL), fitted by least squares on the ' + ev.fit_n + ' protocols in this snapshot whose token already trades ' +
     '(market cap &gt; 0, TVL &gt; 0). The fitted curve was tested held-out two ways — leave-one-out miss ×' + ev.loo_miss.toFixed(2) +
     ' and walk-forward miss ×' + ev.walk_forward_miss.toFixed(2) + ' — against a flat 0.25× TVL multiple at ×' + ev.flat_miss.toFixed(2) + '. ' +
-    'Extra terms (7-day growth, age, chain count) were tested and rejected: each made both held-out tests worse.</p>' +
+    'Extra terms were tested and rejected: 7-day growth, age and chain count each made both held-out tests ' +
+    'worse, and so did per-category intercepts, a sibling indicator and log age — none of them lowered both ' +
+    'the leave-one-out and the walk-forward miss, so the curve is size alone.</p>' +
     '<p>Launch odds are counted from the snapshot: the share of protocols in each age bucket that record a token. ' +
     'A protocol “records no token” when DefiLlama lists no market cap, no CoinGecko id and no symbol for it — ' +
     'that is not a guarantee it has no token, and it is not a guarantee it will ever issue one. Implied value is ' +

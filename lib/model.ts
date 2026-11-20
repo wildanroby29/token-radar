@@ -129,6 +129,14 @@ export interface OddsBucket {
   share: number;
 }
 
+/** One traded token plotted on the fit scatter: its size and its market value. */
+export interface FitPoint {
+  slug: string;
+  name: string;
+  tvl_usd: number;
+  mcap_usd: number;
+}
+
 /** The held-out evidence, recomputed from the snapshot on every run. */
 export interface Evidence {
   fit_n: number;
@@ -174,6 +182,7 @@ export interface RadarData {
   total_implied_usd: number;
   rows: RadarRow[];
   live: LiveRow[];
+  fit_points: FitPoint[];
   evidence: Evidence;
   ledger: Ledger;
   verdicts_1k: Record<string, number>;
@@ -699,6 +708,10 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
     total_implied_usd: board.reduce((a, r) => a + r.implied_value_usd, 0),
     rows: board.map(radarRow),
     live,
+    fit_points: snapshot.protocols
+      .filter((p) => (p.mcap_usd ?? 0) > 0 && p.tvl_usd > 0)
+      .sort((a, b) => a.tvl_usd - b.tvl_usd)
+      .map((p) => ({ slug: p.slug, name: p.name, tvl_usd: p.tvl_usd, mcap_usd: p.mcap_usd! })),
     evidence,
     ledger: buildLedger(snapshot, board.length, rankableCount),
     verdicts_1k,
