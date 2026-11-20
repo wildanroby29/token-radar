@@ -37,6 +37,12 @@
         (market cap, CoinGecko id or symbol set). Brier score <span id="brier"></span>.</p>
       </div>
     </div>
+    <div class="factors">
+      <h3>Growth and maturity move the value</h3>
+      <p class="note" id="factors-formula"></p>
+      <table class="plain" id="factors-table"></table>
+      <p class="note" id="factors-examples"></p>
+    </div>
     <figure class="scatter">
       <h3>The fit, plotted</h3>
       <div id="scatter"></div>
@@ -54,10 +60,16 @@
     <p class="note">Move the sliders to see how the Top 5 implied values change. This is a
     what-if view only; board.json is fixed by the fitted curve.</p>
     <label>Size exponent <output id="exp-out"></output>
-      <input type="range" id="exp-slider" min="0.40" max="0.65" step="0.005" value="0.522">
+      <input type="range" id="exp-slider" min="0.40" max="0.65" step="any" value="0.522">
     </label>
     <label>Curve scale (intercept shift) <output id="scale-out"></output>
       <input type="range" id="scale-slider" min="-0.5" max="0.5" step="0.01" value="0">
+    </label>
+    <label>Growth factor strength <output id="growth-out"></output>
+      <input type="range" id="growth-slider" min="0" max="1" step="0.05" value="1">
+    </label>
+    <label>Maturity factor strength <output id="maturity-out"></output>
+      <input type="range" id="maturity-slider" min="0" max="1" step="0.05" value="1">
     </label>
     <div class="sandbox-result" id="sandbox-result"></div>
   </section>

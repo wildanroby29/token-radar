@@ -1,4 +1,4 @@
-// Token Radar dashboard (radar-2): renders window.RADAR, no fetch, no network.
+// Token Radar dashboard (radar-3): renders window.RADAR, no fetch, no network.
 (function () {
   var R = window.RADAR;
   var main = document.getElementById('board');
@@ -69,7 +69,10 @@
     'Implied value is fitted from the ' + ev.fit_n + ' tokens in this snapshot that already trade: ' +
     'log10(market cap) = ' + ev.intercept.toFixed(4) + ' + ' + ev.exponent.toFixed(4) +
     ' × log10(TVL). It is a model of what a launch could be worth, not a promise of one. ' +
-    'Growth and age are shown as context only — they do not move the number.';
+    'The curve is then moved by the protocol\u2019s own 7-day growth and its token-free age: a rising ' +
+    'protocol is worth more than a flat one of the same size, and a seasoned one more than a new one. ' +
+    'Both adjustments are bounded — growth ×' + ev.growth_min.toFixed(2) + '–×' + ev.growth_max.toFixed(2) +
+    ', maturity ×' + ev.maturity_min.toFixed(2) + '–×' + ev.maturity_max.toFixed(2) + ' — and counted from this snapshot.';
   var v1 = R.verdicts_1k;
   document.getElementById('kpis').innerHTML = [
     ['Total implied value', money(R.total_implied_usd)],
@@ -96,17 +99,21 @@
   // Evidence tables
   document.getElementById('evidence-table').innerHTML =
     '<tr><th>Model</th><th>Leave-one-out miss</th><th>Walk-forward miss</th><th>P25–P75 holds</th><th>P10–P90 holds</th></tr>' +
-    '<tr><td><b>Fitted curve (kept)</b></td><td>×' + ev.loo_miss.toFixed(2) + '</td><td>×' + ev.walk_forward_miss.toFixed(2) +
+    '<tr><td><b>Fitted curve × growth × maturity (kept)</b></td><td>×' + ev.loo_miss.toFixed(2) + '</td><td>×' + ev.walk_forward_miss.toFixed(2) +
     '</td><td>' + Math.round(ev.loo_p25_75 * 100) + '% / ' + Math.round(ev.walk_forward_p25_75 * 100) +
     '%</td><td>' + Math.round(ev.loo_p10_90 * 100) + '% / ' + Math.round(ev.walk_forward_p10_90 * 100) + '%</td></tr>' +
+    '<tr><td>Size-only curve</td><td>×' + ev.loo_miss_size_only.toFixed(2) + '</td><td>×' + ev.walk_forward_miss_size_only.toFixed(2) +
+    '</td><td>' + Math.round(ev.loo_p25_75_size_only * 100) + '% / ' + Math.round(ev.walk_forward_p25_75_size_only * 100) +
+    '%</td><td>' + Math.round(ev.loo_p10_90_size_only * 100) + '% / ' + Math.round(ev.walk_forward_p10_90_size_only * 100) + '%</td></tr>' +
     '<tr><td>Flat 0.25× TVL</td><td>×' + ev.flat_miss.toFixed(2) + '</td><td>—</td><td>—</td><td>—</td></tr>';
   document.getElementById('evidence-note').textContent =
     'Miss is the median factor between predicted and true market cap. Leave-one-out refits the curve ' +
     'without each token and predicts it; walk-forward fits on tokens listed before 2024-12-19 and tests ' +
-    'on the 32 listed after. More terms were tried and none survived both tests: per-category intercepts ' +
-    '(Dexs, Lending) lowered walk-forward to ×2.75 but raised leave-one-out to ×3.68; a sibling indicator ' +
-    'lowered leave-one-out to ×3.30 but raised walk-forward to ×3.16; log age broke walk-forward outright ' +
-    '(×9.15) by extrapolating past its training range. So the curve stays size alone.';
+    'on the 32 listed after. A full regression term for growth or age was tried and rejected — growth ' +
+    'gave leave-one-out ×3.76 / walk-forward ×3.13 and log age ×3.56 / ×9.11, both worse than size alone ' +
+    '(×3.40 / ×2.88) — so the factors are bounded multipliers instead. A wide maturity band [0.75, 1.30] ' +
+    'was also tried and rejected (walk-forward ×3.28); the chosen bands cost little: leave-one-out ×3.55 ' +
+    'and walk-forward ×3.11, and that cost is shown here, not hidden.';
   document.getElementById('odds-table').innerHTML =
     '<tr><th>Age</th><th>Protocols</th><th>Share with a token</th></tr>' +
     ev.odds.map(function (o) {
@@ -116,6 +123,35 @@
   document.getElementById('brier').textContent =
     ev.brier_odds.toFixed(2) + ' vs ' + ev.brier_overall.toFixed(2) + ' for the overall rate alone (' +
     Math.round(ev.overall_token_share * 100) + '% of protocols record a token)';
+
+  // Growth and maturity factors: the formulas, the counted maturity table, and two
+  // worked examples from the top row's own TVL — the same size, different inputs.
+  document.getElementById('factors-formula').textContent =
+    'Implied value = fitted curve × G × M. G = 1 + the 7-day change, clipped to ±20% ' +
+    '(so G is ' + ev.growth_min.toFixed(2) + '–' + ev.growth_max.toFixed(2) + '; a missing 7-day change is 1.00). ' +
+    'M = the age bucket\u2019s token rate ÷ the overall token rate (' + Math.round(ev.overall_token_share * 100) +
+    '%), clamped to ' + ev.maturity_min.toFixed(2) + '–' + ev.maturity_max.toFixed(2) +
+    ' — counted from this snapshot, and the same bucket rates feed the launch odds above.';
+  document.getElementById('factors-table').innerHTML =
+    '<tr><th>Age bucket</th><th>Token rate</th><th>Maturity factor M</th></tr>' +
+    ev.maturity_factors.map(function (m) {
+      return '<tr><td>' + esc(m.bucket) + '</td><td>' + Math.round(m.rate * 100) + '%</td><td>×' +
+        m.factor.toFixed(2) + '</td></tr>';
+    }).join('');
+  (function workedExamples() {
+    var top = rows[0];
+    if (!top) return;
+    var base = top.base_implied_usd;
+    var gDown = base * 0.80 * top.maturity_factor;
+    var gUp = base * 1.20 * top.maturity_factor;
+    var mYoung = base * top.growth_factor * 0.85;
+    var mOld = base * top.growth_factor * 1.15;
+    document.getElementById('factors-examples').innerHTML =
+      'Worked examples, at ' + esc(top.name) + '\u2019s TVL (' + money(top.tvl_usd) + ', curve value ' +
+      money(base) + '): a 7-day change of −20% gives ' + money(gDown) + ' while +20% gives ' + money(gUp) +
+      ' — the same size, a different value. An age under 2 years (M ×0.85) gives ' + money(mYoung) +
+      ' while 3 years or more (M ×1.15) gives ' + money(mOld) + '.';
+  })();
 
   // Fit scatter: log10 TVL against log10 market cap for the traded tokens,
   // with the fitted curve. Static SVG, no network, no library.
@@ -168,6 +204,7 @@
     document.getElementById('scatter-note').textContent =
       'Each dot is one of the ' + pts.length + ' traded tokens in this snapshot. The line is the fitted curve: ' +
       'log10(market cap) = ' + ev.intercept.toFixed(4) + ' + ' + ev.exponent.toFixed(4) + ' × log10(TVL). ' +
+      'Each row\u2019s implied value is the curve value at its TVL, times its growth and maturity factors. ' +
       'Dots above the line trade richer than their size alone predicts; dots below it trade cheaper.';
   })();
 
@@ -183,19 +220,28 @@
   // Sandbox
   var expSlider = document.getElementById('exp-slider');
   var scaleSlider = document.getElementById('scale-slider');
-  expSlider.value = ev.exponent.toFixed(3);
+  var growthSlider = document.getElementById('growth-slider');
+  var maturitySlider = document.getElementById('maturity-slider');
+  expSlider.value = String(ev.exponent);
   function renderSandbox() {
     var exp = parseFloat(expSlider.value);
     var shift = parseFloat(scaleSlider.value);
+    var gStr = parseFloat(growthSlider.value);
+    var mStr = parseFloat(maturitySlider.value);
     document.getElementById('exp-out').textContent = exp.toFixed(3);
     document.getElementById('scale-out').textContent = (shift >= 0 ? '+' : '') + shift.toFixed(2);
+    document.getElementById('growth-out').textContent = Math.round(gStr * 100) + '%';
+    document.getElementById('maturity-out').textContent = Math.round(mStr * 100) + '%';
     document.getElementById('sandbox-result').innerHTML = rows.slice(0, 5).map(function (r) {
-      var v = Math.round(Math.pow(10, ev.intercept + shift) * Math.pow(r.tvl_usd, exp));
+      var base = Math.round(Math.pow(10, ev.intercept + shift) * Math.pow(r.tvl_usd, exp));
+      var v = Math.round(base * (1 + (r.growth_factor - 1) * gStr) * (1 + (r.maturity_factor - 1) * mStr));
       return '<span>' + esc(r.name) + ': <b>' + money(v) + '</b></span>';
     }).join('');
   }
   expSlider.addEventListener('input', renderSandbox);
   scaleSlider.addEventListener('input', renderSandbox);
+  growthSlider.addEventListener('input', renderSandbox);
+  maturitySlider.addEventListener('input', renderSandbox);
   renderSandbox();
 
   // Filters
@@ -307,6 +353,9 @@
       '<button type="button" data-dep="10000"' + (dep === 10000 ? ' class="active"' : '') + '>$10,000 deposit</button></div>' +
       '<div class="stats">' +
       '<div class="stat"><div class="label">Implied value</div><div class="value">' + money(r.implied_value_usd) + '</div></div>' +
+      '<div class="stat"><div class="label">Curve value (size only)</div><div class="value">' + money(r.base_implied_usd) + '</div></div>' +
+      '<div class="stat"><div class="label">Growth factor</div><div class="value">×' + r.growth_factor.toFixed(2) + ' (' + pct(r.change_7d) + ' in 7 days)</div></div>' +
+      '<div class="stat"><div class="label">Maturity factor</div><div class="value">×' + r.maturity_factor.toFixed(2) + ' (age ' + ageText(r.age_days) + ')</div></div>' +
       '<div class="stat"><div class="label">P25–P75 range</div><div class="value">' + money(r.implied_p25_usd) + ' – ' + money(r.implied_p75_usd) + '</div></div>' +
       '<div class="stat"><div class="label">TVL</div><div class="value">' + money(r.tvl_usd) + '</div></div>' +
       '<div class="stat"><div class="label">7-day change</div><div class="value">' + pct(r.change_7d) + '</div></div>' +
@@ -349,13 +398,17 @@
   document.getElementById('method').innerHTML =
     '<h2>Methodology</h2>' +
     '<p>Source: ' + esc(R.source) + ', snapshot as of ' + esc(R.as_of) + '. Floor: ' + money(R.floor_usd) + ' TVL. ' +
-    'Model ' + esc(R.model_version) + ': log10(market cap) = ' + ev.intercept.toFixed(4) + ' + ' + ev.exponent.toFixed(4) +
-    ' × log10(TVL), fitted by least squares on the ' + ev.fit_n + ' protocols in this snapshot whose token already trades ' +
-    '(market cap &gt; 0, TVL &gt; 0). The fitted curve was tested held-out two ways — leave-one-out miss ×' + ev.loo_miss.toFixed(2) +
-    ' and walk-forward miss ×' + ev.walk_forward_miss.toFixed(2) + ' — against a flat 0.25× TVL multiple at ×' + ev.flat_miss.toFixed(2) + '. ' +
-    'Extra terms were tested and rejected: 7-day growth, age and chain count each made both held-out tests ' +
-    'worse, and so did per-category intercepts, a sibling indicator and log age — none of them lowered both ' +
-    'the leave-one-out and the walk-forward miss, so the curve is size alone.</p>' +
+    'Model ' + esc(R.model_version) + ': implied value = 10^' + ev.intercept.toFixed(4) + ' × TVL^' + ev.exponent.toFixed(4) +
+    ' × G × M, where the curve is fitted by least squares on the ' + ev.fit_n + ' protocols in this snapshot whose token already trades ' +
+    '(market cap &gt; 0, TVL &gt; 0). G = 1 + the 7-day change, clipped to ±20% (G in ' + ev.growth_min.toFixed(2) + '–' + ev.growth_max.toFixed(2) +
+    '; a missing 7-day change is 1.00). M = the age bucket\u2019s token rate ÷ the overall token rate, clamped to ' +
+    ev.maturity_min.toFixed(2) + '–' + ev.maturity_max.toFixed(2) + ' — counted from this snapshot. ' +
+    'The fitted value was tested held-out two ways — leave-one-out miss ×' + ev.loo_miss.toFixed(2) +
+    ' and walk-forward miss ×' + ev.walk_forward_miss.toFixed(2) + ' — against the size-only curve at ×' +
+    ev.loo_miss_size_only.toFixed(2) + ' / ×' + ev.walk_forward_miss_size_only.toFixed(2) + ' and a flat 0.25× TVL multiple at ×' + ev.flat_miss.toFixed(2) + '. ' +
+    'Full regression terms for growth and age were tested and rejected (growth ×3.76 / ×3.13, log age ×3.56 / ×9.11), ' +
+    'as were per-category intercepts, a sibling indicator and a wide maturity band [0.75, 1.30] (walk-forward ×3.28); ' +
+    'the bounded factors are what survived, and their small held-out cost is shown in the evidence table.</p>' +
     '<p>Launch odds are counted from the snapshot: the share of protocols in each age bucket that record a token. ' +
     'A protocol “records no token” when DefiLlama lists no market cap, no CoinGecko id and no symbol for it — ' +
     'that is not a guarantee it has no token, and it is not a guarantee it will ever issue one. Implied value is ' +

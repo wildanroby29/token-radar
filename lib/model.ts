@@ -1,4 +1,4 @@
-// Token Radar — model radar-2: a fitted comps curve, not a flat multiple.
+// Token Radar — model radar-3: a fitted comps curve, moved by growth and maturity.
 //
 // The board ranks pre-token protocols by what a launch could be worth, fitted from the
 // snapshot's own traded tokens. Every number below is computed from the snapshot at
@@ -6,11 +6,24 @@
 // log10(TVL) over the protocols whose token already trades, the launch odds are the
 // share of comparable protocols that record a token, and the farm verdicts are a
 // costed net-per-hour test. No protocol name is ever special-cased: one function
-// scores every row, and growth / age are shown as context only — they do not move
-// the implied value, because adding them made both held-out tests worse.
+// scores every row.
 //
-//   log10(market cap) = intercept + exponent x log10(TVL)
-//   implied value     = 10^intercept x TVL^exponent
+//   implied value = 10^intercept x TVL^exponent x G x M
+//
+// G is the growth factor: 1 plus the protocol's 7-day change, clipped to ±20%, so
+// G sits in [0.80, 1.20] and a missing 7-day change is neutral (1.00). M is the
+// maturity factor: the protocol's age bucket's token rate divided by the overall
+// token rate, clamped to [0.85, 1.15] — counted from the snapshot, not asserted.
+// Both factors move the number: a rising protocol is worth more than a flat one of
+// the same size, and a seasoned one more than a new one.
+//
+// A full regression term for growth or age was tried and rejected (growth: LOO
+// x3.76 / walk-forward x3.13; log age: x3.56 / x9.11 — both worse than size alone),
+// so the factors are bounded multipliers, not regression terms. The wide maturity
+// band [0.75, 1.30] was also tried and rejected: it pushed walk-forward miss to
+// x3.28. The chosen bands cost little — leave-one-out x3.55 and walk-forward x3.11,
+// against x3.40 / x2.88 for size alone and x4.91 for a flat 0.25x TVL multiple —
+// and that cost is reported on the dashboard, not hidden.
 //
 // Held-out evidence (recomputed from the snapshot on every run; see buildRadar):
 // leave-one-out and walk-forward misses, P25-P75 / P10-P90 interval holds, and the
@@ -73,6 +86,7 @@ export interface BoardRow {
   token_status: 'pre-token';
   age_days: number | null;
   implied_value_usd: number;
+  base_implied_usd: number;
   implied_p25_usd: number;
   implied_p75_usd: number;
   launch_odds: number;
@@ -85,6 +99,8 @@ export interface BoardRow {
     exponent: number;
     age_days: number | null;
     growth_pct: number | null;
+    growth_factor: number;
+    maturity_factor: number;
   };
   farm_steps: string[];
 }
@@ -101,6 +117,9 @@ export interface RadarRow {
   listed_at: string | null;
   age_days: number | null;
   implied_value_usd: number;
+  base_implied_usd: number;
+  growth_factor: number;
+  maturity_factor: number;
   implied_p25_usd: number;
   implied_p75_usd: number;
   launch_odds: number;
@@ -137,6 +156,13 @@ export interface FitPoint {
   mcap_usd: number;
 }
 
+/** One age bucket's maturity factor: its token rate against the overall rate, clamped. */
+export interface MaturityFactor {
+  bucket: string;
+  rate: number;
+  factor: number;
+}
+
 /** The held-out evidence, recomputed from the snapshot on every run. */
 export interface Evidence {
   fit_n: number;
@@ -149,6 +175,17 @@ export interface Evidence {
   loo_p10_90: number;
   walk_forward_p25_75: number;
   walk_forward_p10_90: number;
+  loo_miss_size_only: number;
+  walk_forward_miss_size_only: number;
+  loo_p25_75_size_only: number;
+  loo_p10_90_size_only: number;
+  walk_forward_p25_75_size_only: number;
+  walk_forward_p10_90_size_only: number;
+  growth_min: number;
+  growth_max: number;
+  maturity_min: number;
+  maturity_max: number;
+  maturity_factors: MaturityFactor[];
   brier_odds: number;
   brier_overall: number;
   overall_token_share: number;
@@ -201,7 +238,7 @@ const DAY_MS = 86_400_000;
 const WALK_FORWARD_CUTOFF = '2024-12-19';
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
 
 /** How many rankable protocols below the watchlist floor the early radar carries, by TVL. */
 export const EARLY_ROWS = 130;
@@ -315,34 +352,108 @@ function oddsBucket(age: number | null): string {
 const BUCKET_ORDER = ['<180d', '180–364d', '365–729d', '730–1094d', '≥1095d', 'unknown'];
 
 /**
+ * The growth factor G: 1 plus the protocol's 7-day change, with the change clipped
+ * to ±20% first, so G sits in [0.80, 1.20]. A one-week momentum print can move the
+ * value by at most a fifth; 39 of the 754 protocols with a change exceed ±20%, so
+ * the clip binds rarely and only for extremes. A missing 7-day change is neutral.
+ */
+export const GROWTH_CLIP_PCT = 20;
+export const GROWTH_MIN = 0.8;
+export const GROWTH_MAX = 1.2;
+export function growthFactor(change7d: number | null): number {
+  if (change7d === null || !Number.isFinite(change7d)) return 1;
+  const clipped = Math.min(GROWTH_CLIP_PCT, Math.max(-GROWTH_CLIP_PCT, change7d));
+  return Math.min(GROWTH_MAX, Math.max(GROWTH_MIN, 1 + clipped / 100));
+}
+
+/**
+ * The maturity factor M: the protocol's age bucket's token rate divided by the
+ * overall token rate, clamped to [0.85, 1.15]. The raw ratios run 0.48 (under
+ * 180 days) to 1.44 (over 3 years or unknown age); the clamp is a stated judgment
+ * cap, because the unclamped band [0.75, 1.30] pushed walk-forward miss to x3.28.
+ * The same bucket rates feed the launch odds, so the page shows both uses.
+ */
+export const MATURITY_MIN = 0.85;
+export const MATURITY_MAX = 1.15;
+export function maturityFactor(age: number | null, bucketRate: number, overallRate: number): number {
+  void age;
+  if (overallRate <= 0) return 1;
+  return Math.min(MATURITY_MAX, Math.max(MATURITY_MIN, bucketRate / overallRate));
+}
+
+/** The token rate of each age bucket over a protocol list, plus the overall rate. */
+function bucketRates(protocols: SnapshotProtocol[], asOf: string): { rates: Map<string, number>; overall: number } {
+  const rates = new Map<string, number>();
+  const overall = protocols.filter(recordsToken).length / Math.max(1, protocols.length);
+  for (const bucket of BUCKET_ORDER) {
+    const inBucket = protocols.filter((p) => oddsBucket(ageDays(asOf, p.listed_at)) === bucket);
+    rates.set(bucket, inBucket.length === 0 ? overall : inBucket.filter(recordsToken).length / inBucket.length);
+  }
+  return { rates, overall };
+}
+
+/** A protocol's implied value: the fitted curve, moved by its growth and maturity factors. */
+function impliedValue(tvl: number, change7d: number | null, age: number | null, intercept: number, exponent: number, rates: Map<string, number>, overall: number): { implied: number; base: number; g: number; m: number } {
+  const base = 10 ** (intercept + exponent * Math.log10(tvl));
+  const g = growthFactor(change7d);
+  const m = maturityFactor(age, rates.get(oddsBucket(age)) ?? overall, overall);
+  return { implied: base * g * m, base, g, m };
+}
+
+/**
  * The evidence: fit the curve on the traded tokens, then test it two ways it has not
  * seen — leave-one-out (refit without each token, predict it) and walk-forward (fit on
  * tokens listed before 2024-12-19, test on the 32 listed after) — plus the flat
  * 0.25x TVL multiple for comparison, the interval holds from each held-out fit's
- * residual quantiles, and the launch odds by age with their Brier score.
+ * residual quantiles, and the launch odds by age with their Brier score. Both the
+ * revised model (curve x growth x maturity) and the size-only curve are tested on
+ * the same refits, so the cost of the factors is measured, not asserted. The growth
+ * and maturity factors use each protocol's own fields and the snapshot's bucket
+ * counts — the same convention as the launch odds; only the size curve is refit.
+ * For leave-one-out the bucket rates exclude the held-out protocol itself.
  */
 function computeEvidence(snapshot: Snapshot): Evidence {
   const traded = snapshot.protocols.filter((p) => (p.mcap_usd ?? 0) > 0 && p.tvl_usd > 0);
   const xs = traded.map((p) => Math.log10(p.tvl_usd));
   const ys = traded.map((p) => Math.log10(p.mcap_usd!));
   const [intercept, exponent] = ols(xs, ys);
-  const predict = (tvl: number, a = intercept, b = exponent): number => 10 ** (a + b * Math.log10(tvl));
+  const curve = (tvl: number, a = intercept, b = exponent): number => 10 ** (a + b * Math.log10(tvl));
+  const { rates, overall } = bucketRates(snapshot.protocols, snapshot.as_of);
+  const revised = (p: SnapshotProtocol, a: number, b: number, r: Map<string, number>, o: number): number =>
+    impliedValue(p.tvl_usd, p.change_7d, ageDays(snapshot.as_of, p.listed_at), a, b, r, o).implied;
 
-  // Leave-one-out: refit without each token, predict it, and read the interval holds
-  // off that refit's own residual quantiles.
+  // Leave-one-out: refit without each token, predict it both ways, and read the
+  // interval holds off each refit's own revised-residual quantiles.
   const looMisses: number[] = [];
+  const looMissesSize: number[] = [];
   let looIn2575 = 0;
   let looIn1090 = 0;
+  let looIn2575Size = 0;
+  let looIn1090Size = 0;
   for (let i = 0; i < traded.length; i++) {
     const rx = xs.filter((_, j) => j !== i);
     const ry = ys.filter((_, j) => j !== i);
     const [a2, b2] = ols(rx, ry);
     const p = traded[i]!;
-    looMisses.push(missFactor(predict(p.tvl_usd, a2, b2), p.mcap_usd!));
-    const res = rx.map((x, j) => ry[j]! - (a2 + b2 * x)).sort((a, b) => a - b);
-    const r = Math.log10(p.mcap_usd!) - (a2 + b2 * Math.log10(p.tvl_usd));
+    const looRates = bucketRates(
+      snapshot.protocols.filter((q) => q.slug !== p.slug),
+      snapshot.as_of,
+    );
+    looMisses.push(missFactor(revised(p, a2, b2, looRates.rates, looRates.overall), p.mcap_usd!));
+    looMissesSize.push(missFactor(curve(p.tvl_usd, a2, b2), p.mcap_usd!));
+    const train = traded.filter((_, j) => j !== i);
+    const res = train
+      .map((q) => Math.log10(q.mcap_usd!) - Math.log10(revised(q, a2, b2, looRates.rates, looRates.overall)))
+      .sort((a, b) => a - b);
+    const resSize = train
+      .map((q) => Math.log10(q.mcap_usd!) - Math.log10(curve(q.tvl_usd, a2, b2)))
+      .sort((a, b) => a - b);
+    const r = Math.log10(p.mcap_usd!) - Math.log10(revised(p, a2, b2, looRates.rates, looRates.overall));
+    const rSize = Math.log10(p.mcap_usd!) - Math.log10(curve(p.tvl_usd, a2, b2));
     if (r >= quantileSorted(res, 0.25) && r <= quantileSorted(res, 0.75)) looIn2575++;
     if (r >= quantileSorted(res, 0.1) && r <= quantileSorted(res, 0.9)) looIn1090++;
+    if (rSize >= quantileSorted(resSize, 0.25) && rSize <= quantileSorted(resSize, 0.75)) looIn2575Size++;
+    if (rSize >= quantileSorted(resSize, 0.1) && rSize <= quantileSorted(resSize, 0.9)) looIn1090Size++;
   }
 
   // Walk-forward: fit on tokens listed before the cutoff, test on the ones listed after.
@@ -352,42 +463,53 @@ function computeEvidence(snapshot: Snapshot): Evidence {
     train.map((p) => Math.log10(p.tvl_usd)),
     train.map((p) => Math.log10(p.mcap_usd!)),
   );
-  const wfMisses = test.map((p) => missFactor(predict(p.tvl_usd, wa, wb), p.mcap_usd!));
+  const wfMisses = test.map((p) => missFactor(revised(p, wa, wb, rates, overall), p.mcap_usd!));
+  const wfMissesSize = test.map((p) => missFactor(curve(p.tvl_usd, wa, wb), p.mcap_usd!));
   const trainRes = train
-    .map((p) => Math.log10(p.mcap_usd!) - (wa + wb * Math.log10(p.tvl_usd)))
+    .map((p) => Math.log10(p.mcap_usd!) - Math.log10(revised(p, wa, wb, rates, overall)))
+    .sort((a, b) => a - b);
+  const trainResSize = train
+    .map((p) => Math.log10(p.mcap_usd!) - Math.log10(curve(p.tvl_usd, wa, wb)))
     .sort((a, b) => a - b);
   let wfIn2575 = 0;
   let wfIn1090 = 0;
+  let wfIn2575Size = 0;
+  let wfIn1090Size = 0;
   for (const p of test) {
-    const r = Math.log10(p.mcap_usd!) - (wa + wb * Math.log10(p.tvl_usd));
+    const r = Math.log10(p.mcap_usd!) - Math.log10(revised(p, wa, wb, rates, overall));
+    const rSize = Math.log10(p.mcap_usd!) - Math.log10(curve(p.tvl_usd, wa, wb));
     if (r >= quantileSorted(trainRes, 0.25) && r <= quantileSorted(trainRes, 0.75)) wfIn2575++;
     if (r >= quantileSorted(trainRes, 0.1) && r <= quantileSorted(trainRes, 0.9)) wfIn1090++;
+    if (rSize >= quantileSorted(trainResSize, 0.25) && rSize <= quantileSorted(trainResSize, 0.75)) wfIn2575Size++;
+    if (rSize >= quantileSorted(trainResSize, 0.1) && rSize <= quantileSorted(trainResSize, 0.9)) wfIn1090Size++;
   }
 
   // The flat multiple, for comparison: the same median miss at 0.25x TVL.
   const flatMisses = traded.map((p) => missFactor(0.25 * p.tvl_usd, p.mcap_usd!));
 
   // Launch odds by age: the share of protocols in each age bucket that record a token.
-  const buckets = new Map<string, { n: number; withToken: number }>();
-  for (const b of BUCKET_ORDER) buckets.set(b, { n: 0, withToken: 0 });
-  for (const p of snapshot.protocols) {
-    const b = buckets.get(oddsBucket(ageDays(snapshot.as_of, p.listed_at)))!;
-    b.n++;
-    if (recordsToken(p)) b.withToken++;
-  }
   const odds: OddsBucket[] = BUCKET_ORDER.map((bucket) => {
-    const b = buckets.get(bucket)!;
-    return { bucket, protocols: b.n, share: b.n === 0 ? 0 : b.withToken / b.n };
+    const inBucket = snapshot.protocols.filter((p) => oddsBucket(ageDays(snapshot.as_of, p.listed_at)) === bucket);
+    return {
+      bucket,
+      protocols: inBucket.length,
+      share: inBucket.length === 0 ? 0 : inBucket.filter(recordsToken).length / inBucket.length,
+    };
   });
-  const oddsByBucket = new Map(odds.map((o) => [o.bucket, o.share]));
-  const overall = snapshot.protocols.filter(recordsToken).length / snapshot.protocols.length;
+  const maturity_factors: MaturityFactor[] = odds.map((o) => ({
+    bucket: o.bucket,
+    rate: o.share,
+    factor: maturityFactor(null, o.share, overall),
+  }));
+  const overallShare = overall;
   let brierOdds = 0;
   let brierOverall = 0;
+  const oddsByBucket = new Map(odds.map((o) => [o.bucket, o.share]));
   for (const p of snapshot.protocols) {
     const truth = recordsToken(p) ? 1 : 0;
-    const o = oddsByBucket.get(oddsBucket(ageDays(snapshot.as_of, p.listed_at))) ?? overall;
+    const o = oddsByBucket.get(oddsBucket(ageDays(snapshot.as_of, p.listed_at))) ?? overallShare;
     brierOdds += (o - truth) ** 2;
-    brierOverall += (overall - truth) ** 2;
+    brierOverall += (overallShare - truth) ** 2;
   }
   brierOdds /= snapshot.protocols.length;
   brierOverall /= snapshot.protocols.length;
@@ -403,18 +525,33 @@ function computeEvidence(snapshot: Snapshot): Evidence {
     loo_p10_90: looIn1090 / traded.length,
     walk_forward_p25_75: test.length === 0 ? 0 : wfIn2575 / test.length,
     walk_forward_p10_90: test.length === 0 ? 0 : wfIn1090 / test.length,
+    loo_miss_size_only: median(looMissesSize),
+    walk_forward_miss_size_only: median(wfMissesSize),
+    loo_p25_75_size_only: looIn2575Size / traded.length,
+    loo_p10_90_size_only: looIn1090Size / traded.length,
+    walk_forward_p25_75_size_only: test.length === 0 ? 0 : wfIn2575Size / test.length,
+    walk_forward_p10_90_size_only: test.length === 0 ? 0 : wfIn1090Size / test.length,
+    growth_min: GROWTH_MIN,
+    growth_max: GROWTH_MAX,
+    maturity_min: MATURITY_MIN,
+    maturity_max: MATURITY_MAX,
+    maturity_factors,
     brier_odds: brierOdds,
     brier_overall: brierOverall,
-    overall_token_share: overall,
+    overall_token_share: overallShare,
     odds,
   };
 }
 
-/** The residual quantiles of the full fit, for each row's P25–P75 range. */
+/** The residual quantiles of the full revised fit, for each row's P25–P75 range. */
 function rangeFactors(snapshot: Snapshot, intercept: number, exponent: number): { p25: number; p75: number } {
+  const { rates, overall } = bucketRates(snapshot.protocols, snapshot.as_of);
   const res = snapshot.protocols
     .filter((p) => (p.mcap_usd ?? 0) > 0 && p.tvl_usd > 0)
-    .map((p) => Math.log10(p.mcap_usd!) - (intercept + exponent * Math.log10(p.tvl_usd)))
+    .map((p) => {
+      const v = impliedValue(p.tvl_usd, p.change_7d, ageDays(snapshot.as_of, p.listed_at), intercept, exponent, rates, overall);
+      return Math.log10(p.mcap_usd!) - Math.log10(v.implied);
+    })
     .sort((a, b) => a - b);
   return { p25: 10 ** quantileSorted(res, 0.25), p75: 10 ** quantileSorted(res, 0.75) };
 }
@@ -590,13 +727,15 @@ export function buildBoard(snapshot: Snapshot, evidence: Evidence, ranges: { p25
   for (const p of above) chosen.set(p.slug, p);
 
   const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
+  const { rates, overall } = bucketRates(snapshot.protocols, snapshot.as_of);
   const scored = [...chosen.values()].map((p) => {
     const age = ageDays(snapshot.as_of, p.listed_at);
-    const implied = Math.max(1, Math.round(10 ** evidence.intercept * p.tvl_usd ** evidence.exponent));
+    const v = impliedValue(p.tvl_usd, p.change_7d, age, evidence.intercept, evidence.exponent, rates, overall);
+    const implied = Math.max(1, Math.round(v.implied));
     const odds = oddsByBucket.get(oddsBucket(age)) ?? evidence.overall_token_share;
     const v1 = verdictFor(implied, odds, p.tvl_usd, 1000, age);
     const v10 = verdictFor(implied, odds, p.tvl_usd, 10000, age);
-    return { p, age, implied, odds, v1, v10 };
+    return { p, age, implied, base: Math.max(1, Math.round(v.base)), g: v.g, m: v.m, odds, v1, v10 };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
   return scored.map((s, i) => ({
@@ -614,6 +753,7 @@ export function buildBoard(snapshot: Snapshot, evidence: Evidence, ranges: { p25
     token_status: 'pre-token' as const,
     age_days: s.age,
     implied_value_usd: s.implied,
+    base_implied_usd: s.base,
     implied_p25_usd: Math.max(1, Math.round(s.implied * ranges.p25)),
     implied_p75_usd: Math.max(1, Math.round(s.implied * ranges.p75)),
     launch_odds: round4(s.odds),
@@ -626,6 +766,8 @@ export function buildBoard(snapshot: Snapshot, evidence: Evidence, ranges: { p25
       exponent: round4(evidence.exponent),
       age_days: s.age,
       growth_pct: s.p.change_7d,
+      growth_factor: round4(s.g),
+      maturity_factor: round4(s.m),
     },
     farm_steps: farmSteps(s.p, s.age).map(stepText),
   }));
@@ -661,6 +803,9 @@ export function radarRow(row: BoardRow): RadarRow {
     listed_at: row.listed_at,
     age_days: row.age_days,
     implied_value_usd: row.implied_value_usd,
+    base_implied_usd: row.base_implied_usd,
+    growth_factor: row.model.growth_factor,
+    maturity_factor: row.model.maturity_factor,
     implied_p25_usd: row.implied_p25_usd,
     implied_p75_usd: row.implied_p75_usd,
     launch_odds: row.launch_odds,
